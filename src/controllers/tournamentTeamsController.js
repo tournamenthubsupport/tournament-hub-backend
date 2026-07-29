@@ -5,6 +5,18 @@ const normalizeContact = (value) =>
     .replace(/\D/g, "")
     .slice(-10);
 
+const getMinPlayersRequired = (tournamentType = "", matchType = "") => {
+  const type = String(tournamentType || "").toLowerCase();
+  const match = String(matchType || "").toLowerCase();
+
+  // Turf format requires 6 players. All other formats default to 11.
+  if (type.includes("turf") || match.includes("turf")) {
+    return 6;
+  }
+
+  return 11;
+};
+
 async function autoApproveOwnersOwnTeams(
   tournamentId = null,
   organiserContact = null,
@@ -70,11 +82,14 @@ export async function removeTeamsWithInsufficientPlayers() {
          tt.tournament_id,
          t.name as tournament_name,
          t.tournament_type,
+         t.match_type,
          t.organiser_contact,
          tt.team_id,
          tm.name as team_name,
          CASE 
-           WHEN t.tournament_type = 'Turf' THEN 6
+           WHEN LOWER(COALESCE(t.tournament_type, '')) LIKE '%turf%'
+             OR LOWER(COALESCE(t.match_type, '')) LIKE '%turf%'
+             THEN 6
            ELSE 11
          END as required_players,
          COUNT(tp.player_id) as current_players
@@ -82,22 +97,26 @@ export async function removeTeamsWithInsufficientPlayers() {
        JOIN tournaments t ON tt.tournament_id = t.id
        JOIN teams tm ON tt.team_id = tm.id
        LEFT JOIN team_players tp ON tm.id = tp.team_id
-       GROUP BY tt.tournament_id, t.name, t.tournament_type, t.organiser_contact, tt.team_id, tm.name
+       GROUP BY tt.tournament_id, t.name, t.tournament_type, t.match_type, t.organiser_contact, tt.team_id, tm.name
        HAVING 
-         (t.tournament_type = 'Turf' AND COUNT(tp.player_id) < 6) OR
-         (t.tournament_type != 'Turf' AND COUNT(tp.player_id) < 11)`,
+         ((LOWER(COALESCE(t.tournament_type, '')) LIKE '%turf%'
+           OR LOWER(COALESCE(t.match_type, '')) LIKE '%turf%')
+           AND COUNT(tp.player_id) < 6) OR
+         ((LOWER(COALESCE(t.tournament_type, '')) NOT LIKE '%turf%'
+           AND LOWER(COALESCE(t.match_type, '')) NOT LIKE '%turf%')
+           AND COUNT(tp.player_id) < 11)`,
     );
 
     // For each team with insufficient players, create alert and remove
     for (const record of insufficientTeams) {
       const alertMessage = `Team "${record.team_name}" (ID: ${record.team_id}) removed from tournament "${record.tournament_name}" - has only ${record.current_players} player(s), requires ${record.required_players}.`;
-      
+
       // Create alert for organizer
       await sql.query(
         `INSERT INTO admin_notifications (notification_type, reference_id, title, message)
          VALUES ($1, $2, $3, $4)`,
         [
-          'team_removed_insufficient_players',
+          "team_removed_insufficient_players",
           record.tournament_id,
           `Team Removed - ${record.tournament_name}`,
           alertMessage,
@@ -113,10 +132,15 @@ export async function removeTeamsWithInsufficientPlayers() {
     }
 
     if (insufficientTeams.length > 0) {
-      console.log(`Removed ${insufficientTeams.length} team(s) with insufficient players from tournaments.`);
+      console.log(
+        `Removed ${insufficientTeams.length} team(s) with insufficient players from tournaments.`,
+      );
     }
   } catch (error) {
-    console.error('Error removing teams with insufficient players:', error.message);
+    console.error(
+      "Error removing teams with insufficient players:",
+      error.message,
+    );
   }
 }
 
@@ -125,7 +149,7 @@ export async function addTeamToTournament(req, res) {
   const { tournament_id, team_id, fee_paid } = req.body;
   try {
     const tournamentResult = await sql.query(
-      `SELECT organiser_contact, tournament_type, name
+      `SELECT organiser_contact, tournament_type, match_type, name
        FROM tournaments
        WHERE id = $1
        LIMIT 1`,
@@ -156,21 +180,29 @@ export async function addTeamToTournament(req, res) {
     );
 
     const playerCount = parseInt(playerCountResult?.[0]?.player_count || 0);
-    const minPlayersRequired = tournament.tournament_type === 'Turf' ? 6 : 11; // 6 for Turf, 11 for Open Ground
+    const minPlayersRequired = getMinPlayersRequired(
+      tournament.tournament_type,
+      tournament.match_type,
+    );
 
     // Validate player count
     if (playerCount < minPlayersRequired) {
       // Create alert for organiser
-      const alertMessage = `Team "${team.name}" (ID: ${team_id}) attempted to join but has only ${playerCount} player(s). ${tournament.tournament_type === 'Turf' ? 'Turf tournaments require at least 6 players.' : 'Open Ground tournaments require at least 11 players.'}`;
-      
+      const alertMessage = `Team "${team.name}" (ID: ${team_id}) attempted to join but has only ${playerCount} player(s). ${minPlayersRequired === 6 ? "Turf format requires at least 6 players." : "Open Ground format requires at least 11 players."}`;
+
       await sql.query(
         `INSERT INTO admin_notifications (notification_type, reference_id, title, message)
          VALUES ($1, $2, $3, $4)`,
-        ['insufficient_players', tournament_id, `Insufficient Players - ${tournament.name}`, alertMessage],
+        [
+          "insufficient_players",
+          tournament_id,
+          `Insufficient Players - ${tournament.name}`,
+          alertMessage,
+        ],
       );
 
       return res.status(400).json({
-        error: `Team must have at least ${minPlayersRequired} players to join a ${tournament.tournament_type} tournament. Your team has ${playerCount} player(s).`,
+        error: `Team must have at least ${minPlayersRequired} players to join this tournament format. Your team has ${playerCount} player(s).`,
         requiredPlayers: minPlayersRequired,
         currentPlayers: playerCount,
       });

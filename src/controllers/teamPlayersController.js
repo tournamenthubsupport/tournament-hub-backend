@@ -53,40 +53,92 @@ export const assignPlayersToTeam = async (req, res) => {
 
     const teamName = teamRows[0].name;
 
-    // Insert relationships into team_players
-    const insertResults = await Promise.all(
-      players.map(
-        ({ playerId, is_captain = false, is_vicecaptain = false }) =>
-          sql`
-          INSERT INTO team_players (team_id, player_id, is_captain, is_vicecaptain)
-          VALUES (${teamId}, ${playerId}, ${is_captain}, ${is_vicecaptain})
-          ON CONFLICT DO NOTHING
-          RETURNING team_id, player_id
-        `,
-      ),
+    const dedupedPlayers = [];
+    const seenPlayerIds = new Set();
+
+    for (const player of players) {
+      const playerId = Number(player?.playerId);
+      if (!Number.isFinite(playerId) || seenPlayerIds.has(playerId)) {
+        continue;
+      }
+
+      seenPlayerIds.add(playerId);
+      dedupedPlayers.push({
+        playerId,
+        is_captain: !!player?.is_captain,
+        is_vicecaptain: !!player?.is_vicecaptain,
+      });
+    }
+
+    if (dedupedPlayers.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "No valid players found in request payload" });
+    }
+
+    const insertedAssignments = await sql.query(
+      `
+      INSERT INTO team_players (team_id, player_id, is_captain, is_vicecaptain)
+      SELECT
+        $1::int,
+        x.player_id,
+        x.is_captain,
+        x.is_vicecaptain
+      FROM jsonb_to_recordset($2::jsonb) AS x(
+        player_id bigint,
+        is_captain boolean,
+        is_vicecaptain boolean
+      )
+      ON CONFLICT (team_id, player_id) DO NOTHING
+      RETURNING team_id, player_id
+      `,
+      [
+        Number(teamId),
+        JSON.stringify(
+          dedupedPlayers.map((p) => ({
+            player_id: p.playerId,
+            is_captain: p.is_captain,
+            is_vicecaptain: p.is_vicecaptain,
+          })),
+        ),
+      ],
     );
 
-    const insertedAssignments = insertResults
-      .flatMap((rows) => (Array.isArray(rows) ? rows : []))
-      .filter((row) => row?.player_id);
-
-    await Promise.all(
-      insertedAssignments.map(
-        ({ player_id }) =>
-          sql`
-          INSERT INTO player_notifications (player_id, team_id, title, message)
-          VALUES (
-            ${player_id},
-            ${teamId},
-            ${`Added to ${teamName}`},
-            ${`You were added to the ${teamName} team. If you do not want to be part of this team, you can leave it from the app.`}
-          )
-        `,
-      ),
+    const insertedPlayerIds = (insertedAssignments || []).map((row) =>
+      Number(row.player_id),
     );
+
+    if (insertedPlayerIds.length > 0) {
+      await sql.query(
+        `
+        INSERT INTO player_notifications (player_id, team_id, title, message)
+        SELECT
+          pid,
+          $1::int,
+          $2::text,
+          $3::text
+        FROM unnest($4::bigint[]) AS u(pid)
+        `,
+        [
+          Number(teamId),
+          `Added to ${teamName}`,
+          `You were added to the ${teamName} team. If you do not want to be part of this team, you can leave it from the app.`,
+          insertedPlayerIds,
+        ],
+      );
+    }
 
     res.status(200).json({
-      message: `Assigned ${players.length} player(s) to team ${teamId}`,
+      message: `Processed ${dedupedPlayers.length} player(s) for team ${teamId}`,
+      summary: {
+        requested: players.length,
+        valid: dedupedPlayers.length,
+        assigned: insertedPlayerIds.length,
+        alreadyAssigned: Math.max(
+          dedupedPlayers.length - insertedPlayerIds.length,
+          0,
+        ),
+      },
       details: insertedAssignments,
     });
   } catch (error) {
@@ -169,12 +221,10 @@ export const getTeamsForPlayer = async (req, res) => {
     return res.status(200).json({ teams });
   } catch (error) {
     console.error("Error fetching teams for player:", error);
-    return res
-      .status(500)
-      .json({
-        message: "Failed to fetch teams for player",
-        error: error.message,
-      });
+    return res.status(500).json({
+      message: "Failed to fetch teams for player",
+      error: error.message,
+    });
   }
 };
 
@@ -283,12 +333,10 @@ export const getPlayerNotifications = async (req, res) => {
     return res.status(200).json({ notifications });
   } catch (error) {
     console.error("Error fetching player notifications:", error);
-    return res
-      .status(500)
-      .json({
-        message: "Failed to fetch player notifications",
-        error: error.message,
-      });
+    return res.status(500).json({
+      message: "Failed to fetch player notifications",
+      error: error.message,
+    });
   }
 };
 
@@ -315,11 +363,9 @@ export const markPlayerNotificationsRead = async (req, res) => {
     return res.status(200).json({ updated: updatedRows.length });
   } catch (error) {
     console.error("Error marking player notifications read:", error);
-    return res
-      .status(500)
-      .json({
-        message: "Failed to mark notifications read",
-        error: error.message,
-      });
+    return res.status(500).json({
+      message: "Failed to mark notifications read",
+      error: error.message,
+    });
   }
 };

@@ -1,22 +1,25 @@
-import express from 'express';
+import express from "express";
 import {
     createPlayer,
+    createPlayersBulk,
     deletePlayer,
     getAllPlayers,
     getPlayersByNameOrMobile,
-    updatePlayer
-} from '../controllers/playersController.js';
+    updatePlayer,
+} from "../controllers/playersController.js";
 
 const router = express.Router();
 
-router.get('/', getAllPlayers);
+router.get("/", getAllPlayers);
 
-router.post('/add', createPlayer);
+router.post("/add", createPlayer);
 
-router.put('/:id', updatePlayer);
+router.post("/bulk-add", createPlayersBulk);
 
-router.delete('/:id', deletePlayer);
+router.put("/:id", updatePlayer);
 
-router.get('/search', getPlayersByNameOrMobile);
+router.delete("/:id", deletePlayer);
+
+router.get("/search", getPlayersByNameOrMobile);
 
 export default router;

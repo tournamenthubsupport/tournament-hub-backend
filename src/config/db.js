@@ -6,6 +6,12 @@ export const sql = neon(process.env.DATABASE_URL);
 
 let mongoClient;
 let mongoDb;
+let mongoDbName;
+
+const parseIntEnv = (name, fallback) => {
+  const value = Number.parseInt(String(process.env[name] || ""), 10);
+  return Number.isFinite(value) ? value : fallback;
+};
 
 export async function initMongoDB() {
   const uri = process.env.MONGODB_URI;
@@ -24,14 +30,23 @@ export async function initMongoDB() {
       strict: true,
       deprecationErrors: true,
     },
-    serverSelectionTimeoutMS: 10000,
-    connectTimeoutMS: 10000,
+    // Low-usage defaults to reduce idle resource usage in shared/free tiers.
+    maxPoolSize: parseIntEnv("MONGODB_MAX_POOL_SIZE", 5),
+    minPoolSize: parseIntEnv("MONGODB_MIN_POOL_SIZE", 0),
+    maxIdleTimeMS: parseIntEnv("MONGODB_MAX_IDLE_TIME_MS", 30000),
+    serverSelectionTimeoutMS: parseIntEnv(
+      "MONGODB_SERVER_SELECTION_TIMEOUT_MS",
+      10000,
+    ),
+    connectTimeoutMS: parseIntEnv("MONGODB_CONNECT_TIMEOUT_MS", 10000),
+    waitQueueTimeoutMS: parseIntEnv("MONGODB_WAIT_QUEUE_TIMEOUT_MS", 5000),
   });
 
   await mongoClient.connect();
   await mongoClient.db("admin").command({ ping: 1 });
 
   const dbName = process.env.MONGODB_DB_NAME || "tournament_hub";
+  mongoDbName = dbName;
   mongoDb = mongoClient.db(dbName);
   await mongoDb
     .collection("match_scorecards")
@@ -54,6 +69,52 @@ export async function closeMongoDB() {
     await mongoClient.close();
     mongoClient = undefined;
     mongoDb = undefined;
+    mongoDbName = undefined;
+  }
+}
+
+export async function getMongoDiagnostics() {
+  const uriConfigured = Boolean(process.env.MONGODB_URI);
+
+  if (!uriConfigured) {
+    return {
+      configured: false,
+      connected: false,
+      reason: "MONGODB_URI is not configured",
+    };
+  }
+
+  if (!mongoDb || !mongoClient) {
+    return {
+      configured: true,
+      connected: false,
+      reason: "MongoDB client is not initialized",
+    };
+  }
+
+  try {
+    const pingStart = Date.now();
+    await mongoDb.command({ ping: 1 });
+    const pingMs = Date.now() - pingStart;
+
+    return {
+      configured: true,
+      connected: true,
+      dbName: mongoDbName,
+      pingMs,
+      pool: {
+        maxPoolSize: parseIntEnv("MONGODB_MAX_POOL_SIZE", 5),
+        minPoolSize: parseIntEnv("MONGODB_MIN_POOL_SIZE", 0),
+        maxIdleTimeMS: parseIntEnv("MONGODB_MAX_IDLE_TIME_MS", 30000),
+      },
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      connected: false,
+      dbName: mongoDbName,
+      reason: error?.message || "MongoDB ping failed",
+    };
   }
 }
 

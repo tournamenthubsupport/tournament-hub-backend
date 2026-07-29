@@ -55,6 +55,8 @@ async function getMatchContext(matchId) {
     `SELECT
        m.id,
        m.tournament_id,
+       m.next_match_id,
+       m.next_slot,
        m.home_team_id,
        ht.name AS home_team_name,
        m.away_team_id,
@@ -1229,16 +1231,33 @@ export async function completeMatchScorecard(req, res) {
       { $set: compactCompletedScorecard },
     );
 
+    const winnerTeamId =
+      Number(compactCompletedScorecard?.resultSummary?.winnerTeamId || 0) ||
+      null;
+
     await sql.query(
       `UPDATE matches
        SET status = 'completed', winner_team_id = $2
        WHERE id = $1`,
-      [
-        matchId,
-        Number(compactCompletedScorecard?.resultSummary?.winnerTeamId || 0) ||
-          null,
-      ],
+      [matchId, winnerTeamId],
     );
+
+    // When scorecard completion decides a winner, also advance that team to the next bracket match.
+    if (
+      winnerTeamId &&
+      Number(matchContext.next_match_id || 0) > 0 &&
+      (matchContext.next_slot === "home" || matchContext.next_slot === "away")
+    ) {
+      const slotColumn =
+        matchContext.next_slot === "home" ? "home_team_id" : "away_team_id";
+
+      await sql.query(
+        `UPDATE matches
+         SET ${slotColumn} = $2
+         WHERE id = $1`,
+        [Number(matchContext.next_match_id), winnerTeamId],
+      );
+    }
 
     return res.status(200).json({ message: "Scorecard marked as completed" });
   } catch (error) {
