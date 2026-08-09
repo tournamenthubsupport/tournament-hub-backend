@@ -976,6 +976,23 @@ export async function addBallEvent(req, res) {
          WHERE id = $1`,
         [matchId, Number(resultSummary?.winnerTeamId || 0) || null],
       );
+
+      const winnerTeamId = Number(resultSummary?.winnerTeamId || 0) || null;
+      if (
+        winnerTeamId &&
+        Number(matchContext.next_match_id || 0) > 0 &&
+        (matchContext.next_slot === "home" || matchContext.next_slot === "away")
+      ) {
+        const slotColumn =
+          matchContext.next_slot === "home" ? "home_team_id" : "away_team_id";
+
+        await sql.query(
+          `UPDATE matches
+           SET ${slotColumn} = $2
+           WHERE id = $1`,
+          [Number(matchContext.next_match_id), winnerTeamId],
+        );
+      }
     } else if (inningsCompleted && currentInnings === 1) {
       await sql.query(
         `UPDATE matches SET status = 'in_progress' WHERE id = $1`,

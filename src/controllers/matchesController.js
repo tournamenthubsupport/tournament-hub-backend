@@ -65,6 +65,34 @@ const autoAdvanceByeWinner = async (matchRow) => {
   );
 };
 
+const reconcileTournamentBracketProgression = async (tournamentId) => {
+  await sql.query(
+    `UPDATE matches AS next_match
+     SET home_team_id = feeder.winner_team_id
+     FROM matches AS feeder
+     WHERE feeder.tournament_id = $1
+       AND feeder.next_match_id = next_match.id
+       AND feeder.next_slot = 'home'
+       AND feeder.winner_team_id IS NOT NULL
+       AND next_match.tournament_id = $1
+       AND next_match.home_team_id IS NULL`,
+    [tournamentId],
+  );
+
+  await sql.query(
+    `UPDATE matches AS next_match
+     SET away_team_id = feeder.winner_team_id
+     FROM matches AS feeder
+     WHERE feeder.tournament_id = $1
+       AND feeder.next_match_id = next_match.id
+       AND feeder.next_slot = 'away'
+       AND feeder.winner_team_id IS NOT NULL
+       AND next_match.tournament_id = $1
+       AND next_match.away_team_id IS NULL`,
+    [tournamentId],
+  );
+};
+
 export async function getTournamentMatches(req, res) {
   try {
     const tournamentId = Number(req.params.id);
@@ -72,6 +100,10 @@ export async function getTournamentMatches(req, res) {
     if (!Number.isInteger(tournamentId) || tournamentId <= 0) {
       return res.status(400).json({ error: "Invalid tournament id" });
     }
+
+    // Self-heal bracket slots for already completed feeder matches.
+    // This ensures final slots are backfilled even if earlier flows missed propagation.
+    await reconcileTournamentBracketProgression(tournamentId);
 
     const result = await sql.query(
       `SELECT
