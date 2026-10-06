@@ -1,4 +1,8 @@
 import { sql } from "../config/db.js";
+import {
+  buildTournamentRosterConflictResponse,
+  getPlayerAssignmentTournamentConflicts,
+} from "../services/tournamentPlayerValidation.js";
 
 export const clearExpiredPlayerNotifications = async (mobile) => {
   const filters = [
@@ -76,6 +80,46 @@ export const assignPlayersToTeam = async (req, res) => {
         .json({ message: "No valid players found in request payload" });
     }
 
+    const existingAssignments = await sql.query(
+      `SELECT player_id
+       FROM team_players
+       WHERE team_id = $1`,
+      [Number(teamId)],
+    );
+    const existingPlayerIds = new Set(
+      (existingAssignments || []).map((row) => Number(row.player_id)),
+    );
+    const alreadyAssigned = dedupedPlayers.filter((player) =>
+      existingPlayerIds.has(player.playerId),
+    );
+
+    if (alreadyAssigned.length > 0) {
+      return res.status(409).json({
+        message: "One or more selected players are already members of this team.",
+        code: "PLAYER_ALREADY_ON_TEAM",
+        playerIds: alreadyAssigned.map((player) => player.playerId),
+      });
+    }
+
+    if (existingPlayerIds.size + dedupedPlayers.length > 15) {
+      return res.status(409).json({
+        message: `A team can have at most 15 players. This team has ${existingPlayerIds.size} player(s) and can add only ${Math.max(15 - existingPlayerIds.size, 0)} more.`,
+        code: "TEAM_PLAYER_LIMIT_REACHED",
+        currentPlayers: existingPlayerIds.size,
+        availableSlots: Math.max(15 - existingPlayerIds.size, 0),
+      });
+    }
+
+    const tournamentConflicts = await getPlayerAssignmentTournamentConflicts(
+      teamId,
+      dedupedPlayers.map((player) => player.playerId),
+    );
+    if (tournamentConflicts.length > 0) {
+      return res
+        .status(409)
+        .json(buildTournamentRosterConflictResponse(tournamentConflicts));
+    }
+
     const insertedAssignments = await sql.query(
       `
       INSERT INTO team_players (team_id, player_id, is_captain, is_vicecaptain)
@@ -143,6 +187,12 @@ export const assignPlayersToTeam = async (req, res) => {
     });
   } catch (error) {
     console.error("Error assigning players to team:", error);
+    if (error?.code === "23514") {
+      return res.status(409).json({
+        message: "A team can have at most 15 players.",
+        code: "TEAM_PLAYER_LIMIT_REACHED",
+      });
+    }
     res
       .status(500)
       .json({ message: "Failed to assign players", error: error.message });

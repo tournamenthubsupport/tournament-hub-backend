@@ -213,6 +213,8 @@ export async function initDB() {
       CREATE TABLE IF NOT EXISTS teams (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
+        state VARCHAR(100),
+        city VARCHAR(100),
         location VARCHAR(255) NOT NULL,
         sport_id INTEGER NOT NULL DEFAULT 1,
         created_by VARCHAR(20)
@@ -242,6 +244,14 @@ export async function initDB() {
       ALTER TABLE teams
       ADD COLUMN IF NOT EXISTS created_by VARCHAR(20);
     `;
+    await sql`
+      ALTER TABLE teams
+      ADD COLUMN IF NOT EXISTS state VARCHAR(100);
+    `;
+    await sql`
+      ALTER TABLE teams
+      ADD COLUMN IF NOT EXISTS city VARCHAR(100);
+    `;
 
     // Players table
     await sql`
@@ -265,6 +275,36 @@ export async function initDB() {
       is_vicecaptain BOOLEAN DEFAULT FALSE
     );
  `;
+
+    await sql`
+      CREATE OR REPLACE FUNCTION enforce_team_player_limit()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        PERFORM 1 FROM teams WHERE id = NEW.team_id FOR UPDATE;
+
+        IF (
+          SELECT COUNT(*)
+          FROM team_players
+          WHERE team_id = NEW.team_id
+        ) >= 15 THEN
+          RAISE EXCEPTION 'A team can have at most 15 players.'
+            USING ERRCODE = 'check_violation';
+        END IF;
+
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `;
+
+    await sql`
+      DROP TRIGGER IF EXISTS team_player_limit_trigger ON team_players;
+    `;
+    await sql`
+      CREATE TRIGGER team_player_limit_trigger
+      BEFORE INSERT ON team_players
+      FOR EACH ROW
+      EXECUTE FUNCTION enforce_team_player_limit();
+    `;
 
     console.log("Team_players table created successfully");
 

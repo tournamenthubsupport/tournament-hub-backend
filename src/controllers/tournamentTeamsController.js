@@ -1,4 +1,8 @@
 import { sql } from "../config/db.js";
+import {
+  buildTournamentRosterConflictResponse,
+  getTournamentRosterConflicts,
+} from "../services/tournamentPlayerValidation.js";
 
 const normalizeContact = (value) =>
   String(value || "")
@@ -46,7 +50,18 @@ async function autoApproveOwnersOwnTeams(
        AND tm.id = tt.team_id
        AND ${whereClause}
        AND RIGHT(REGEXP_REPLACE(COALESCE(t.organiser_contact, ''), '\\D', '', 'g'), 10) =
-           RIGHT(REGEXP_REPLACE(COALESCE(tm.created_by, ''), '\\D', '', 'g'), 10)`,
+           RIGHT(REGEXP_REPLACE(COALESCE(tm.created_by, ''), '\D', '', 'g'), 10)
+       AND NOT EXISTS (
+         SELECT 1
+         FROM team_players candidate
+         INNER JOIN team_players existing
+           ON existing.player_id = candidate.player_id
+          AND existing.team_id <> candidate.team_id
+         INNER JOIN tournament_teams existing_entry
+           ON existing_entry.tournament_id = tt.tournament_id
+          AND existing_entry.team_id = existing.team_id
+         WHERE candidate.team_id = tt.team_id
+       )`,
     values,
   );
 }
@@ -206,6 +221,16 @@ export async function addTeamToTournament(req, res) {
         requiredPlayers: minPlayersRequired,
         currentPlayers: playerCount,
       });
+    }
+
+    const rosterConflicts = await getTournamentRosterConflicts(
+      tournament_id,
+      team_id,
+    );
+    if (rosterConflicts.length > 0) {
+      return res
+        .status(409)
+        .json(buildTournamentRosterConflictResponse(rosterConflicts));
     }
 
     const isOwnersOwnTeam =
@@ -425,6 +450,16 @@ export async function deleteTeamFromTournament(req, res) {
 export async function approveTeamInTournament(req, res) {
   const { tournament_id, team_id } = req.body;
   try {
+    const rosterConflicts = await getTournamentRosterConflicts(
+      tournament_id,
+      team_id,
+    );
+    if (rosterConflicts.length > 0) {
+      return res
+        .status(409)
+        .json(buildTournamentRosterConflictResponse(rosterConflicts));
+    }
+
     await sql.query(
       `UPDATE tournament_teams SET is_approved = true
          WHERE tournament_id = $1 AND team_id = $2`,

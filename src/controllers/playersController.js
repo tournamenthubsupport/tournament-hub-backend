@@ -224,14 +224,26 @@ export const getAllPlayers = async (req, res) => {
 export const updatePlayer = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, mobile, role, iscaptain, isvicecaptain } = req.body;
+    const name = String(req.body?.name || "").trim();
+    const mobile = String(req.body?.mobile || "").replace(/\D/g, "");
+    const role = String(req.body?.role || "").trim().toLowerCase();
+    const allowedRoles = new Set(["batsman", "bowler", "allrounder", "wicketkeeper"]);
+
+    if (!name || !/^[A-Za-z ]+$/.test(name)) {
+      return res.status(400).json({ message: "Enter a valid player name." });
+    }
+    if (!/^\d{10}$/.test(mobile)) {
+      return res.status(400).json({ message: "Enter a valid 10-digit mobile number." });
+    }
+    if (!allowedRoles.has(role)) {
+      return res.status(400).json({ message: "Choose a valid player role." });
+    }
+
     const updatedPlayer = await sql`
       UPDATE players
       SET name = ${name},
           mobile = ${mobile},
-          role = ${role},
-          iscaptain = ${iscaptain},
-          isvicecaptain = ${isvicecaptain}
+          role = ${role}
       WHERE id = ${id}
       RETURNING *
     `;
@@ -246,6 +258,9 @@ export const updatePlayer = async (req, res) => {
       });
   } catch (error) {
     console.error("Error updating player:", error);
+    if (error?.code === "23505") {
+      return res.status(409).json({ message: "A player with this mobile number already exists." });
+    }
     res
       .status(500)
       .json({ message: "Failed to update player", error: error.message });

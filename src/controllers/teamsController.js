@@ -2,16 +2,37 @@ import { sql } from "../config/db.js";
 
 export const createTeam = async (req, res) => {
   try {
-    const { name, location, sportId, createdBy } = req.body;
-    if (!name || !location || !createdBy) {
-      return res.status(400).json({ message: "name, location and createdBy are required" });
+    const { name, state, city, location, sportId, createdBy } = req.body;
+    if (!name || !state || !city || !location || !createdBy) {
+      return res.status(400).json({ message: "name, state, city, location and createdBy are required" });
     }
 
     const normalizedSportId = Number(sportId) || 1;
+    const existingTeam = await sql`
+      SELECT id, name, state, city, location, sport_id AS "sportId", created_by AS "createdBy"
+      FROM teams
+        WHERE LOWER(REGEXP_REPLACE(TRIM(name), '\s+', ' ', 'g')) =
+          LOWER(REGEXP_REPLACE(TRIM(${name}), '\s+', ' ', 'g'))
+        AND LOWER(REGEXP_REPLACE(TRIM(COALESCE(city, '')), '\s+', ' ', 'g')) =
+          LOWER(REGEXP_REPLACE(TRIM(${city}), '\s+', ' ', 'g'))
+        AND LOWER(REGEXP_REPLACE(TRIM(location), '\s+', ' ', 'g')) =
+          LOWER(REGEXP_REPLACE(TRIM(${location}), '\s+', ' ', 'g'))
+      ORDER BY id
+      LIMIT 1
+    `;
+
+    if (existingTeam.length > 0) {
+      return res.status(409).json({
+        error: `Team "${existingTeam[0].name}" already exists in ${existingTeam[0].location}, ${existingTeam[0].city}. Please choose another team name.`,
+        code: "TEAM_ALREADY_EXISTS",
+        team: existingTeam[0],
+      });
+    }
+
     const newTeam = await sql`
-      INSERT INTO teams (name, location, sport_id, created_by)
-      VALUES (${name}, ${location}, ${normalizedSportId}, ${createdBy})
-      RETURNING id, name, location, sport_id AS "sportId", created_by AS "createdBy"
+      INSERT INTO teams (name, state, city, location, sport_id, created_by)
+      VALUES (${name}, ${state}, ${city}, ${location}, ${normalizedSportId}, ${createdBy})
+      RETURNING id, name, state, city, location, sport_id AS "sportId", created_by AS "createdBy"
     `;
     res.status(201).json({
       message: "Team created successfully",
@@ -26,7 +47,7 @@ export const createTeam = async (req, res) => {
 export const getAllTeams = async (req, res) => {
   try {
     const teams = await sql`
-      SELECT id, name, location, sport_id AS "sportId", created_by AS "createdBy"
+      SELECT id, name, state, city, location, sport_id AS "sportId", created_by AS "createdBy"
       FROM teams
     `;
     res.status(200).json({
@@ -48,7 +69,7 @@ export const getTeamsCreatedByYou = async (req, res) => {
     }
 
     const teams = await sql`
-      SELECT id, name, location, sport_id AS "sportId", created_by AS "createdBy"
+      SELECT id, name, state, city, location, sport_id AS "sportId", created_by AS "createdBy"
       FROM teams
       WHERE created_by = ${mobile}
     `;
@@ -68,7 +89,7 @@ export const getTeamById = async (req, res) => {
   try {
     const { id } = req.params;
     const team = await sql`
-      SELECT id, name, location, sport_id AS "sportId", created_by AS "createdBy"
+      SELECT id, name, state, city, location, sport_id AS "sportId", created_by AS "createdBy"
       FROM teams
       WHERE id = ${id}
     `;
@@ -92,7 +113,7 @@ export const getTeamsByIds = async (req, res) => {
       return res.status(400).json({ message: "teamIds array required" });
     }
     const teams = await sql`
-      SELECT id, name, location, sport_id AS "sportId", created_by AS "createdBy"
+      SELECT id, name, state, city, location, sport_id AS "sportId", created_by AS "createdBy"
       FROM teams
       WHERE id = ANY(${teamIds})
     `;
@@ -106,10 +127,37 @@ export const getTeamsByIds = async (req, res) => {
 export const updateTeam = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name } = req.body;
+    const name = String(req.body?.name || "").trim();
+    const state = String(req.body?.state || "").trim();
+    const city = String(req.body?.city || "").trim();
+    const location = String(req.body?.location || "").trim();
+
+    if (!name || !state || !city || !location) {
+      return res.status(400).json({ message: "Team name, state, city, and location are required." });
+    }
+
+    const duplicateTeam = await sql`
+      SELECT id
+      FROM teams
+      WHERE id <> ${id}
+        AND LOWER(REGEXP_REPLACE(TRIM(name), '\s+', ' ', 'g')) =
+            LOWER(REGEXP_REPLACE(TRIM(${name}), '\s+', ' ', 'g'))
+        AND LOWER(REGEXP_REPLACE(TRIM(COALESCE(city, '')), '\s+', ' ', 'g')) =
+            LOWER(REGEXP_REPLACE(TRIM(${city}), '\s+', ' ', 'g'))
+        AND LOWER(REGEXP_REPLACE(TRIM(location), '\s+', ' ', 'g')) =
+            LOWER(REGEXP_REPLACE(TRIM(${location}), '\s+', ' ', 'g'))
+      LIMIT 1
+    `;
+    if (duplicateTeam.length > 0) {
+      return res.status(409).json({ message: "A team with this name, city, and location already exists." });
+    }
+
     const updatedTeam = await sql`
       UPDATE teams
-      SET name = ${name}
+      SET name = ${name},
+          state = ${state},
+          city = ${city},
+          location = ${location}
       WHERE id = ${id}
       RETURNING *
     `;
